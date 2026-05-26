@@ -1,0 +1,33 @@
+{
+  "databases": [
+    {
+      "name": "Work Tasks",
+      "data_source_id": "replace-with-notion-data-source-id",
+      "type": "tasks",
+      "area": "work",
+      "fields_map": {
+        "title": "Name",
+        "status": "Status",
+        "deadline": "Deadline",
+        "priority": "Priority",
+        "project": "Project",
+        "energy": "Energy",
+        "estimated_minutes": "Estimated time",
+        "notes": "Notes"
+      }
+    },
+    {
+      "name": "Study Tasks",
+      "data_source_id": "replace-with-notion-data-source-id",
+      "type": "tasks",
+      "area": "study",
+      "fields_map": {
+        "title": "Name",
+        "status": "Status",
+        "deadline": "Date",
+        "priority": "Priority",
+        "project": "Course"
+      }
+    }
+  ]
+}

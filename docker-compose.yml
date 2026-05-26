@@ -1,0 +1,8 @@
+services:
+  agent-productivity:
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./.state:/app/.state

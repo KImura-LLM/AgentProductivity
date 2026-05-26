@@ -1,0 +1,17 @@
+[Unit]
+Description=Personal Productivity AI Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/agent-productivity
+EnvironmentFile=/opt/agent-productivity/.env
+ExecStart=/opt/agent-productivity/.venv/bin/agent-productivity
+Restart=always
+RestartSec=5
+User=agent-productivity
+Group=agent-productivity
+
+[Install]
+WantedBy=multi-user.target
