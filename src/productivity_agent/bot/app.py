@@ -43,6 +43,7 @@ def build_application(settings: Settings, service: ProductivityService) -> Appli
     application.add_handler(CommandHandler("reschedule", _authorized(reschedule)))
     application.add_handler(CommandHandler("focus", _authorized(focus)))
     application.add_handler(CommandHandler("stuck", _authorized(stuck)))
+    application.add_handler(CommandHandler("effectiveness", _authorized(effectiveness)))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _authorized(text_message)))
 
     _schedule_jobs(application, settings)
@@ -78,6 +79,7 @@ async def post_init(application: Application) -> None:
             BotCommand("reschedule", "Перенести задачу"),
             BotCommand("focus", "Главный фокус"),
             BotCommand("stuck", "Зависшие задачи"),
+            BotCommand("effectiveness", "Эффективность и сон"),
             BotCommand("settings", "Настройки"),
         ]
     )
@@ -87,7 +89,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "👋 Я ассистент продуктивности.\n\n"
         "Можешь писать обычным текстом: «что мне делать сегодня», «покажи задачи по проекту», "
-        "«что зависло». Команды доступны в меню Telegram.",
+        "«что зависло», «лег спать в 23:20», «проснулся в 07:40». Команды доступны в меню Telegram.",
     )
 
 
@@ -151,6 +153,10 @@ async def stuck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(update, await _service(context).stuck())
 
 
+async def effectiveness(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _reply(update, await _service(context).effectiveness())
+
+
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service = _service(context)
     text = update.effective_message.text
@@ -162,6 +168,11 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     status_change = parse_status_change(text)
     if status_change:
         await _reply(update, await service.start_status_change(text, update.effective_user.id))
+        return
+
+    effectiveness_entry = await service.record_effectiveness(text)
+    if effectiveness_entry:
+        await _reply(update, effectiveness_entry)
         return
 
     command = parse_natural_command(text)
@@ -181,6 +192,8 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, await service.life())
     elif command == "settings":
         await _reply(update, await service.settings_text())
+    elif command == "effectiveness":
+        await _reply(update, await service.effectiveness())
     elif command == "add":
         await _reply(update, await service.start_add(text, update.effective_user.id))
     elif command == "done":

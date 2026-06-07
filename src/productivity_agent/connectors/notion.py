@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -274,7 +275,10 @@ class NotionConnector:
         title = _extract_text(properties.get(fields.get("title", "Name"))) or "Без названия"
         status_name = _extract_option(properties.get(fields.get("status", "Status")))
         priority_name = _extract_option(properties.get(fields.get("priority", "Priority")))
-        deadline_value, time_value = _extract_date(properties.get(fields.get("deadline", "Deadline")))
+        deadline_value, time_value = _extract_date(
+            properties.get(fields.get("deadline", "Deadline")),
+            self.settings.tzinfo,
+        )
         energy_name = _extract_option(properties.get(fields.get("energy", "Energy")))
         estimated = _extract_number(properties.get(fields.get("estimated_minutes", "Estimated time")))
         project = _extract_text_or_option(properties.get(fields.get("project", "Project")))
@@ -348,7 +352,7 @@ def _extract_text_or_option(prop: dict[str, Any] | None) -> str | None:
     return _extract_option(prop) or _extract_text(prop)
 
 
-def _extract_date(prop: dict[str, Any] | None) -> tuple[date | None, str | None]:
+def _extract_date(prop: dict[str, Any] | None, display_tz: tzinfo | None = None) -> tuple[date | None, str | None]:
     if not prop:
         return None, None
     value = prop.get("date")
@@ -357,6 +361,13 @@ def _extract_date(prop: dict[str, Any] | None) -> tuple[date | None, str | None]
     start = value["start"]
     if "T" in start:
         parsed = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if parsed.tzinfo is None and value.get("time_zone"):
+            try:
+                parsed = parsed.replace(tzinfo=ZoneInfo(value["time_zone"]))
+            except ZoneInfoNotFoundError:
+                pass
+        if parsed.tzinfo and display_tz:
+            parsed = parsed.astimezone(display_tz)
         return parsed.date(), parsed.strftime("%H:%M")
     return date.fromisoformat(start), None
 

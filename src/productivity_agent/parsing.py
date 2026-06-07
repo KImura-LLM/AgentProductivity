@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dateparser.search import search_dates
@@ -18,6 +18,16 @@ class ParsedTaskText:
     time: str | None
     source_hint: str | None
     database_hint: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedEffectivenessText:
+    sleep_time: str | None = None
+    wake_time: str | None = None
+    wind_down_time: str | None = None
+    work_finished_time: str | None = None
+    focus_done: bool | None = None
+    note: str | None = None
 
 
 def detect_source(text: str) -> str | None:
@@ -102,6 +112,151 @@ def parse_status_change(text: str) -> tuple[str, str] | None:
     return None
 
 
+def parse_effectiveness_text(text: str, now: datetime, tzinfo: ZoneInfo) -> ParsedEffectivenessText | None:
+    lowered = text.lower().strip()
+    fields: dict[str, str | bool | None] = {
+        "sleep_time": None,
+        "wake_time": None,
+        "wind_down_time": None,
+        "work_finished_time": None,
+        "focus_done": None,
+    }
+
+    has_sleep = any(marker in lowered for marker in ("лег спать", "легла спать", "уснул", "уснула", "сон в"))
+    has_wake = any(
+        marker in lowered
+        for marker in (
+            "проснулся",
+            "проснулась",
+            "встал",
+            "встала",
+            "подъем в",
+            "подъём в",
+            "просыпаюсь",
+            "проснулся в",
+        )
+    )
+    has_wind_down = any(
+        marker in lowered
+        for marker in (
+            "отход ко сну",
+            "готовиться ко сну",
+            "пошел спать",
+            "пошла спать",
+            "пойду спать",
+            "пойду через",
+            "режим сна",
+        )
+    )
+    has_work_finished = any(
+        marker in lowered
+        for marker in (
+            "закончил работу",
+            "закончила работу",
+            "завершил работу",
+            "завершила работу",
+            "закончил задачи",
+            "закончила задачи",
+            "выключил ноутбук",
+            "выключила ноутбук",
+        )
+    )
+    has_focus_done = any(
+        marker in lowered
+        for marker in (
+            "фокус сделал",
+            "фокус сделан",
+            "фокус выполнил",
+            "фокус выполнен",
+            "главный фокус сделал",
+            "главный фокус выполнен",
+        )
+    )
+    has_focus_missed = any(
+        marker in lowered
+        for marker in (
+            "фокус не сделал",
+            "фокус не сделан",
+            "фокус не выполнил",
+            "фокус не выполнен",
+            "главный фокус не сделал",
+            "главный фокус не выполнен",
+        )
+    )
+
+    if not any((has_sleep, has_wake, has_wind_down, has_work_finished, has_focus_done, has_focus_missed)):
+        return None
+
+    time_value = _extract_time(text, now=now, tzinfo=tzinfo)
+    explicit_now = any(marker in lowered for marker in ("сейчас", "только что"))
+    if time_value is None and explicit_now:
+        time_value = now.strftime("%H:%M")
+
+    if has_sleep:
+        fields["sleep_time"] = time_value
+    if has_wake:
+        fields["wake_time"] = time_value
+    if has_wind_down:
+        fields["wind_down_time"] = time_value
+    if has_work_finished:
+        fields["work_finished_time"] = time_value
+    if has_focus_missed:
+        fields["focus_done"] = False
+    elif has_focus_done:
+        fields["focus_done"] = True
+
+    if time_value is None and fields["focus_done"] is None:
+        return None
+
+    return ParsedEffectivenessText(
+        sleep_time=fields["sleep_time"] if isinstance(fields["sleep_time"], str) else None,
+        wake_time=fields["wake_time"] if isinstance(fields["wake_time"], str) else None,
+        wind_down_time=fields["wind_down_time"] if isinstance(fields["wind_down_time"], str) else None,
+        work_finished_time=fields["work_finished_time"] if isinstance(fields["work_finished_time"], str) else None,
+        focus_done=fields["focus_done"] if isinstance(fields["focus_done"], bool) else None,
+        note=text.strip(),
+    )
+
+
+def _extract_time(text: str, now: datetime, tzinfo: ZoneInfo) -> str | None:
+    explicit_match = re.search(r"\b(?P<hour>[01]?\d|2[0-3])[:.](?P<minute>[0-5]\d)\b", text)
+    if explicit_match:
+        return f"{int(explicit_match.group('hour')):02d}:{int(explicit_match.group('minute')):02d}"
+
+    relative_minutes = re.search(
+        r"\bчерез\s+(?P<minutes>\d{1,3})\s*(?:минут|минуты|минуту|мин)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if relative_minutes:
+        parsed_dt = now.astimezone(tzinfo) + timedelta(minutes=int(relative_minutes.group("minutes")))
+        return parsed_dt.strftime("%H:%M")
+
+    matches = search_dates(
+        text,
+        languages=["ru", "en"],
+        settings={
+            "PREFER_DATES_FROM": "past",
+            "RELATIVE_BASE": now,
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": str(tzinfo),
+        },
+    )
+    if not matches:
+        return None
+    _, parsed_dt = matches[-1]
+    if not parsed_dt.hour and not parsed_dt.minute:
+        return None
+    return parsed_dt.strftime("%H:%M")
+
+def is_compound_message(text: str) -> bool:
+    lowered = text.lower().strip()
+    words = re.findall(r"\w+", lowered, flags=re.UNICODE)
+    if len(words) >= 22:
+        return True
+    return any(marker in lowered for marker in ("рекомендац", "посовет", "можешь", "систем", "эффективн", "?"))
+
+
 def parse_natural_command(text: str) -> str | None:
     lowered = text.lower().strip()
     if lowered in {"да", "yes", "y"}:
@@ -120,10 +275,12 @@ def parse_natural_command(text: str) -> str | None:
         return "stuck"
     if "личные задачи" in lowered or "задачи ticktick" in lowered:
         return "life"
-    if lowered.startswith(("добавь задачу", "создай задачу")):
+    if "эффективность" in lowered or "режим сна" in lowered or "статистика сна" in lowered:
+        return "effectiveness"
+    if lowered.startswith(("добавь задачу", "создай задачу")) and not is_compound_message(text):
         return "add"
-    if lowered.startswith(("отметь задачу", "закрой задачу")):
+    if lowered.startswith(("отметь задачу", "закрой задачу")) and not is_compound_message(text):
         return "done"
-    if lowered.startswith(("перенеси задачу", "перенеси", "перенести задачу")):
+    if lowered.startswith(("перенеси задачу", "перенеси", "перенести задачу")) and not is_compound_message(text):
         return "reschedule"
     return None

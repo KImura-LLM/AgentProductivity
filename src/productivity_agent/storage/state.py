@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from productivity_agent.models import PendingAction
+from productivity_agent.models import EffectivenessEntry, PendingAction
 
 
 class JsonStateStore:
@@ -15,11 +15,12 @@ class JsonStateStore:
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"pending_actions": {}, "ticktick": {}}
+            return {"pending_actions": {}, "ticktick": {}, "effectiveness": {}}
         with self.path.open("r", encoding="utf-8") as file:
             data = json.load(file)
         data.setdefault("pending_actions", {})
         data.setdefault("ticktick", {})
+        data.setdefault("effectiveness", {})
         return data
 
     def _write(self, data: dict[str, Any]) -> None:
@@ -64,3 +65,21 @@ class JsonStateStore:
         data = self._read()
         data["ticktick"] = tokens
         self._write(data)
+
+    def get_effectiveness_entry(self, day: datetime | str) -> EffectivenessEntry | None:
+        key = day.date().isoformat() if isinstance(day, datetime) else day
+        data = self._read()
+        raw = data["effectiveness"].get(key)
+        if not raw:
+            return None
+        return EffectivenessEntry.model_validate(raw)
+
+    def set_effectiveness_entry(self, entry: EffectivenessEntry) -> None:
+        data = self._read()
+        data["effectiveness"][entry.day.isoformat()] = entry.model_dump(mode="json")
+        self._write(data)
+
+    def list_effectiveness_entries(self, limit: int = 14) -> list[EffectivenessEntry]:
+        data = self._read()
+        entries = [EffectivenessEntry.model_validate(raw) for raw in data["effectiveness"].values()]
+        return sorted(entries, key=lambda item: item.day)[-limit:]

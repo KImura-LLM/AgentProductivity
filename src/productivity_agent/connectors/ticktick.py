@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 from datetime import time as dt_time
 from typing import Any
 from urllib.parse import urlencode
@@ -122,8 +122,7 @@ class TickTickConnector:
         if project_id:
             payload["projectId"] = project_id
         if deadline:
-            payload["dueDate"] = self._format_due_date(deadline, time)
-            payload["timeZone"] = self.settings.timezone
+            payload.update(self._task_date_payload(deadline, time))
         response = await self._request("POST", "/task", json=payload)
         raw = response.json()
         return self._normalize_task(raw, project_id=raw.get("projectId") or project_id, project_name=project_name)
@@ -144,8 +143,7 @@ class TickTickConnector:
             "projectId": project_id,
             "title": task.title,
             "content": task.notes or "",
-            "dueDate": self._format_due_date(deadline, task.time),
-            "timeZone": self.settings.timezone,
+            **self._task_date_payload(deadline, task.time),
         }
         await self._request("POST", f"/task/{task.id}", json=payload)
         return task.model_copy(update={"deadline": deadline})
@@ -270,7 +268,11 @@ class TickTickConnector:
         project_id: str | None,
         project_name: str | None,
     ) -> NormalizedTask:
-        due_date, due_time = _parse_due_date(raw.get("dueDate"))
+        due_date, due_time = _parse_due_date(
+            raw.get("dueDate"),
+            self.settings.tzinfo,
+            all_day=bool(raw.get("isAllDay")),
+        )
         status = TaskStatus.DONE if raw.get("status") == 2 else TaskStatus.TODO
         task_id = raw.get("id")
         return NormalizedTask(
@@ -303,14 +305,34 @@ class TickTickConnector:
         value = datetime.combine(deadline, dt_time(hour, minute), tzinfo=self.settings.tzinfo)
         return value.strftime("%Y-%m-%dT%H:%M:%S%z")
 
+    def _task_date_payload(self, deadline: date, time_value: str | None) -> dict[str, Any]:
+        scheduled_at = self._format_due_date(deadline, time_value)
+        return {
+            "startDate": scheduled_at,
+            "dueDate": scheduled_at,
+            "isAllDay": not time_value,
+            "timeZone": self.settings.timezone,
+        }
 
-def _parse_due_date(value: str | None) -> tuple[date | None, str | None]:
+
+def _parse_due_date(
+    value: str | None,
+    display_tz: tzinfo | None = None,
+    *,
+    all_day: bool = False,
+) -> tuple[date | None, str | None]:
     if not value:
         return None, None
     normalized = value.replace("Z", "+00:00")
+    if "T" not in normalized:
+        return date.fromisoformat(normalized), None
     if len(normalized) >= 5 and normalized[-5] in {"+", "-"} and normalized[-3] != ":":
         normalized = f"{normalized[:-2]}:{normalized[-2:]}"
     parsed = datetime.fromisoformat(normalized)
+    if all_day:
+        return parsed.date(), None
+    if parsed.tzinfo and display_tz:
+        parsed = parsed.astimezone(display_tz)
     return parsed.date(), parsed.strftime("%H:%M") if parsed.hour or parsed.minute else None
 
 

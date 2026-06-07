@@ -1,12 +1,65 @@
 # Personal Productivity AI Agent
 
-Telegram-first productivity agent for Notion, TickTick, and OpenAI.
+Personal Productivity AI Agent — персональный Telegram-ассистент для управления задачами, проектами и ежедневным планированием. Он собирает задачи из Notion и TickTick, нормализует их в общий формат, анализирует приоритеты через локальные правила и OpenAI, а затем отвечает в Telegram: что делать сегодня, где дедлайны, что зависло и какой фокус выбрать первым.
 
-## Setup
+Проект рассчитан на одного пользователя. Доступ к боту ограничивается `TELEGRAM_ALLOWED_USER_ID`, а все токены и ключи должны храниться только в `.env`.
 
-1. Copy `.env.example` to `.env` and fill in tokens.
-2. Configure Notion databases with `NOTION_DATABASES_JSON` or the legacy `NOTION_TASKS_DATABASE_ID`.
-3. Install dependencies:
+## Для чего нужен
+
+- Ежедневный план: `/today` и `/briefing` собирают актуальные задачи, просрочки, дедлайны и главный фокус.
+- Недельный обзор: `/week` показывает дедлайны, перегрузку по дням и задачи без дат.
+- Вечерний review: `/review` помогает закрыть день и собрать метрики эффективности.
+- Работа с проектами: `/project <name>` показывает активные задачи, риски и следующие действия по проекту.
+- Личные задачи: `/life` фокусируется на TickTick.
+- Изменения задач: `/add`, `/done`, `/reschedule` и смена статуса работают через обязательное подтверждение.
+- Трекинг эффективности: фразы вроде `лег спать в 23:25`, `проснулся в 07:40` и команда `/effectiveness` ведут локальный отчет по сну, завершению работы и главному фокусу.
+
+## Структура проекта
+
+```text
+.
+├── README.md                       # основной обзор и запуск
+├── PRD.md                          # исходное ТЗ продукта
+├── AGENTS.md                       # проектные правила для coding-agent
+├── docs/
+│   └── wiki.md                     # рабочая документация и правила проекта
+├── src/productivity_agent/
+│   ├── main.py                     # точка входа Telegram-бота
+│   ├── bootstrap.py                # сборка сервиса, коннекторов и хранилища
+│   ├── config.py                   # переменные окружения и настройки
+│   ├── models.py                   # нормализованные модели задач и состояния
+│   ├── repository.py               # единый слой доступа к Notion и TickTick
+│   ├── services.py                 # сценарии команд, подтверждения, эффективность
+│   ├── analyzer.py                 # локальная оценка приоритетов и fallback-планы
+│   ├── llm.py                      # генерация ответов через OpenAI с fallback
+│   ├── parsing.py                  # разбор команд и естественного языка
+│   ├── bot/
+│   │   └── app.py                  # Telegram handlers и расписание
+│   ├── connectors/
+│   │   ├── notion.py               # интеграция с Notion
+│   │   ├── ticktick.py             # интеграция с TickTick и OAuth
+│   │   └── base.py                 # общий протокол коннектора
+│   └── storage/
+│       └── state.py                # JSON-состояние: OAuth, pending actions, метрики
+├── tests/                          # pytest-тесты анализатора, коннекторов и safety-flow
+├── deploy/systemd/                 # пример systemd-сервиса
+├── Dockerfile
+├── docker-compose.yml
+├── notion_databases.example.json   # пример конфигурации Notion-баз
+└── .env.example                    # шаблон переменных окружения
+```
+
+## Быстрый старт
+
+1. Создайте `.env` из шаблона и заполните значения:
+
+```bash
+cp .env.example .env
+```
+
+2. Настройте Notion. Для нескольких баз используйте `NOTION_DATABASES_JSON`; пример лежит в `notion_databases.example.json`. Для простой конфигурации можно указать `NOTION_TASKS_DATABASE_ID`.
+
+3. Создайте виртуальное окружение и установите зависимости:
 
 ```bash
 python3.12 -m venv .venv
@@ -14,15 +67,27 @@ python3.12 -m venv .venv
 pip install -e ".[dev]"
 ```
 
-4. For TickTick OAuth:
+4. Проверьте конфигурацию:
 
 ```bash
 agent-productivity-cli doctor
+agent-productivity-cli config
+```
+
+5. Авторизуйте TickTick, если он нужен:
+
+```bash
+agent-productivity-cli ticktick-authorize
+```
+
+Альтернативно можно вручную получить URL и обменять код:
+
+```bash
 agent-productivity-cli ticktick-auth-url
 agent-productivity-cli ticktick-exchange-code <code-from-redirect>
 ```
 
-5. Run the bot:
+6. Запустите бота:
 
 ```bash
 agent-productivity
@@ -34,10 +99,43 @@ agent-productivity
 docker compose up -d --build
 ```
 
-The container reads `.env` and stores local OAuth/pending-action state in `.state/`.
+Контейнер читает `.env` и хранит локальное состояние в `.state/`: OAuth-токены TickTick, ожидающие подтверждения действий и метрики эффективности.
 
-## Commands
+## Команды Telegram
 
-`/today`, `/briefing`, `/week`, `/review`, `/project <name>`, `/life`, `/add`, `/done`, `/reschedule`, `/focus`, `/stuck`, `/settings`.
+- `/start`, `/help` — краткая справка.
+- `/settings` — безопасный вывод текущей конфигурации без секретов.
+- `/today`, `/briefing` — план дня и утренний брифинг.
+- `/week` — недельный обзор.
+- `/review` — вечерний review и подсказка для метрик дня.
+- `/project <name>` — статус проекта по задачам Notion/TickTick.
+- `/life` — личные задачи TickTick.
+- `/add <source> <task>` — создание задачи, например `/add ticktick завтра в 12:00 позвонить врачу`.
+- `/done <query>` — закрытие найденной задачи.
+- `/reschedule <query> на <date>` — перенос задачи.
+- `/focus` — один главный фокус.
+- `/stuck` — зависшие задачи.
+- `/effectiveness` — отчет по эффективности и сну за последние дни.
 
-Write operations create a pending confirmation first. Reply `да` to execute or `нет` / `отмена` to cancel.
+Бот также понимает часть естественных фраз: `что мне делать сегодня`, `покажи задачи на неделю`, `что зависло`, `личные задачи`, `лег спать в 23:25`, `проснулся в 07:40`, `главный фокус выполнен`.
+
+## Правила безопасности write-операций
+
+Операции, которые меняют задачи, не выполняются сразу. Сначала бот показывает найденную задачу или параметры новой задачи и просит подтвердить: `да` / `нет`. Если найдено несколько похожих задач, бот сначала просит выбрать номер. Подтверждение живет 15 минут.
+
+Это касается создания задач, закрытия задач, переноса дедлайна и смены статуса. Если источник недоступен или задача не найдена, бот отвечает без изменения данных.
+
+## Тесты и качество
+
+```bash
+pytest
+ruff check .
+```
+
+Основные тесты покрывают анализатор, форматирование LLM fallback, safety-flow подтверждений, гибкость естественных команд, таймзоны коннекторов и поведение TickTick при переносе задач.
+
+## Дополнительная документация
+
+- `docs/wiki.md` — что можно и нельзя делать в проекте, операционные правила, источники данных и ограничения.
+- `AGENTS.md` — минимальные правила и рекомендации для coding-agent.
+- `PRD.md` — исходное продуктовое ТЗ.

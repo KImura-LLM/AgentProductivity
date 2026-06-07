@@ -95,6 +95,19 @@ class PendingAction(BaseModel):
         return now >= self.expires_at
 
 
+class EffectivenessEntry(BaseModel):
+    day: date
+    sleep_time: str | None = None
+    wake_time: str | None = None
+    wind_down_time: str | None = None
+    work_finished_time: str | None = None
+    focus_done: bool | None = None
+    sleep_deviation_reason: str | None = None
+    wake_deviation_reason: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    updated_at: datetime
+
+
 class AnalysisSnapshot(BaseModel):
     tasks: list[NormalizedTask]
     errors: list[SourceError] = Field(default_factory=list)
