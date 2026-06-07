@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -335,6 +336,34 @@ class ProductivityService:
             f"{latest_reasons}"
         )
 
+    async def sleep_chart_image(self) -> bytes | None:
+        entries = self.state_store.list_effectiveness_entries(limit=14)
+        if not entries:
+            return None
+        rows = [
+            {
+                "day": entry.day.strftime("%d.%m"),
+                "sleep_time": entry.sleep_time,
+                "wake_time": entry.wake_time,
+                "sleep_score": self._sleep_score(entry),
+                "sleep_reason": entry.sleep_deviation_reason,
+                "wake_reason": entry.wake_deviation_reason,
+            }
+            for entry in entries
+        ]
+        prompt = (
+            "Create a clean Russian-language sleep analytics chart image for a Telegram bot. "
+            "Use a dark readable dashboard style with a line or bar chart for sleep score, "
+            "a compact table with dates, sleep time, wake time, and short reason labels. "
+            "Do not include any API names, JSON, technical metadata, or model names. "
+            f"Targets: sleep by {self.settings.target_sleep_time}, wake around {self.settings.target_wake_time}. "
+            f"Data: {rows}"
+        )
+        data_url = await self.llm.generate_image(prompt)
+        if not data_url:
+            return None
+        return self._decode_data_url(data_url)
+
     async def _start_candidate_action(
         self,
         query: str,
@@ -620,6 +649,16 @@ class ProductivityService:
         if not reasons:
             return ""
         return "\n\nПоследние причины отклонений:\n" + "\n".join(reasons[:3])
+
+    @staticmethod
+    def _decode_data_url(value: str) -> bytes | None:
+        if not value.startswith("data:image/") or "," not in value:
+            return None
+        _, encoded = value.split(",", 1)
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except ValueError:
+            return None
 
     def _minutes_late(self, value: str, target: str) -> int:
         actual = self._time_to_bedtime_minutes(value)

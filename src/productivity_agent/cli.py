@@ -181,8 +181,8 @@ def _doctor(settings) -> str:
         missing.append("TELEGRAM_BOT_TOKEN")
     if settings.telegram_allowed_user_id is None:
         missing.append("TELEGRAM_ALLOWED_USER_ID")
-    if not settings.openai_api_key:
-        missing.append("OPENAI_API_KEY")
+    if not settings.openrouter_api_key:
+        missing.append("OPENROUTER_API_KEY")
     if not settings.notion_token:
         missing.append("NOTION_TOKEN")
     if not settings.ticktick_client_id:

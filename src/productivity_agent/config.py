@@ -65,8 +65,18 @@ class Settings(BaseSettings):
         default=None, validation_alias="TELEGRAM_ALLOWED_USER_ID"
     )
 
-    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-5-mini", validation_alias="OPENAI_MODEL")
+    openrouter_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
+    openrouter_model: str = Field(default="~google/gemini-flash-latest", validation_alias="OPENROUTER_MODEL")
+    openrouter_image_model: str = Field(
+        default="google/gemini-2.5-flash-image",
+        validation_alias="OPENROUTER_IMAGE_MODEL",
+    )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        validation_alias="OPENROUTER_BASE_URL",
+    )
+    openrouter_http_referer: str = Field(default="", validation_alias="OPENROUTER_HTTP_REFERER")
+    openrouter_app_title: str = Field(default="AgentProductivity", validation_alias="OPENROUTER_APP_TITLE")
 
     notion_token: str = Field(default="", validation_alias="NOTION_TOKEN")
     notion_version: str = Field(default="2025-09-03", validation_alias="NOTION_VERSION")
@@ -160,7 +170,7 @@ class Settings(BaseSettings):
     def secret_values(self) -> list[str]:
         values: list[str] = [
             self.telegram_bot_token,
-            self.openai_api_key,
+            self.openrouter_api_key,
             self.notion_token,
             self.ticktick_client_secret,
             self.ticktick_access_token,
@@ -189,7 +199,8 @@ class Settings(BaseSettings):
             "telegram_get_updates_read_timeout": self.telegram_get_updates_read_timeout,
             "notion_databases": [db.name for db in self.notion_databases],
             "ticktick_configured": bool(self.ticktick_access_token or self.ticktick_refresh_token),
-            "openai_model": self.openai_model,
+            "openrouter_model": self.openrouter_model,
+            "openrouter_image_model": self.openrouter_image_model,
         }
 
 

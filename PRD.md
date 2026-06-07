@@ -566,7 +566,7 @@ Priority Score = Deadline urgency + User priority + Project importance + Task ag
 1. Hermes Agent установлен на VPS-сервере.
 2. Подключен Telegram-бот.
 3. Реализована авторизация по Telegram ID.
-4. Реализован OpenAI API как основная LLM.
+4. Реализован OpenRouter API как основная LLM.
 5. Реализован Notion Connector для нескольких баз данных.
 6. Реализован TickTick Connector.
 7. Реализовано чтение задач из Notion и TickTick.
@@ -629,7 +629,9 @@ NOTION_PROJECTS_DATABASE_ID=
 TICKTICK_CLIENT_ID=
 TICKTICK_CLIENT_SECRET=
 TICKTICK_REDIRECT_URI=
-OPENAI_API_KEY=
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=~google/gemini-flash-latest
+OPENROUTER_IMAGE_MODEL=google/gemini-2.5-flash-image
 TIMEZONE=Europe/Moscow
 MORNING_BRIEFING_TIME=07:30
 EVENING_REVIEW_TIME=21:00
@@ -804,7 +806,7 @@ MVP считается готовым, если:
 
 Вопрос	Решение
 Где запускать систему	VPS-сервер
-LLM	OpenAI API
+LLM	OpenRouter API
 Структура Notion	Несколько баз данных
 Функциональность первой версии	Сразу полный функционал: чтение, анализ, создание, перенос и закрытие задач
 Утренний брифинг	07:30 по МСК
@@ -819,7 +821,7 @@ LLM	OpenAI API
 
 Так как пользователь хочет сразу полный функционал, проект рекомендуется запускать не как read-only MVP, а как полноценную первую версию с ограничителями безопасности.
 
-Версия 1: Telegram + Hermes Agent + VPS + OpenAI API + чтение Notion/TickTick + создание задач + закрытие задач + перенос задач + ежедневный брифинг + вечерний review.
+Версия 1: Telegram + Hermes Agent + VPS + OpenRouter API + чтение Notion/TickTick + создание задач + закрытие задач + перенос задач + ежедневный брифинг + вечерний review.
 
 Версия 2: подключение календаря и более точное планирование дня по временным блокам.
 

@@ -22,7 +22,7 @@
 - `connectors/` — только API конкретных источников и маппинг в `NormalizedTask`.
 - `repository.py` — объединение источников, поиск кандидатов, выбор нужного коннектора.
 - `services.py` — сценарии команд, подтверждения, эффективность, orchestration.
-- `analyzer.py` — deterministic scoring и fallback без OpenAI.
+- `analyzer.py` — deterministic scoring и fallback без OpenRouter.
 - `llm.py` — компактный payload и русскоязычная генерация без технических деталей.
 - `bot/app.py` — Telegram-команды, авторизация и расписание.
 

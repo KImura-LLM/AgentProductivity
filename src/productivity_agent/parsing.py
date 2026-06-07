@@ -275,6 +275,8 @@ def parse_natural_command(text: str) -> str | None:
         return "stuck"
     if "личные задачи" in lowered or "задачи ticktick" in lowered:
         return "life"
+    if "картинка графика сна" in lowered or "изображение графика сна" in lowered or "sleepchart" in lowered:
+        return "sleepchart"
     if "эффективность" in lowered or "режим сна" in lowered or "статистика сна" in lowered:
         return "effectiveness"
     if lowered.startswith(("добавь задачу", "создай задачу")) and not is_compound_message(text):

@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from functools import wraps
+from io import BytesIO
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InputFile, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -54,6 +55,7 @@ def build_application(settings: Settings, service: ProductivityService) -> Appli
     application.add_handler(CommandHandler("focus", _authorized(focus)))
     application.add_handler(CommandHandler("stuck", _authorized(stuck)))
     application.add_handler(CommandHandler("effectiveness", _authorized(effectiveness)))
+    application.add_handler(CommandHandler("sleepchart", _authorized(sleepchart)))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _authorized(text_message)))
 
     _schedule_jobs(application, settings)
@@ -90,6 +92,7 @@ async def post_init(application: Application) -> None:
             BotCommand("focus", "Главный фокус"),
             BotCommand("stuck", "Зависшие задачи"),
             BotCommand("effectiveness", "Эффективность и сон"),
+            BotCommand("sleepchart", "Картинка графика сна"),
             BotCommand("settings", "Настройки"),
         ]
     )
@@ -99,7 +102,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "👋 Я ассистент продуктивности.\n\n"
         "Можешь писать обычным текстом: «что мне делать сегодня», «покажи задачи по проекту», "
-        "«что зависло», «лег спать в 23:20», «проснулся в 07:40». Команды доступны в меню Telegram.",
+        "«что зависло», «лег спать в 23:20», «проснулся в 07:40», "
+        "«картинка графика сна». Команды доступны в меню Telegram.",
     )
 
 
@@ -167,6 +171,23 @@ async def effectiveness(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _reply(update, await _service(context).effectiveness())
 
 
+async def sleepchart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    image = await _service(context).sleep_chart_image()
+    if not image:
+        await _reply(
+            update,
+            "Пока не смог собрать картинку графика сна. Показываю текстовый отчет:\n\n"
+            f"{await _service(context).effectiveness()}",
+        )
+        return
+    image_file = BytesIO(image)
+    image_file.name = "sleep-chart.png"
+    await update.effective_message.reply_photo(
+        photo=InputFile(image_file, filename="sleep-chart.png"),
+        caption="График сна за последние дни",
+    )
+
+
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service = _service(context)
     text = update.effective_message.text
@@ -204,6 +225,8 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, await service.settings_text())
     elif command == "effectiveness":
         await _reply(update, await service.effectiveness())
+    elif command == "sleepchart":
+        await sleepchart(update, context)
     elif command == "add":
         await _reply(update, await service.start_add(text, update.effective_user.id))
     elif command == "done":

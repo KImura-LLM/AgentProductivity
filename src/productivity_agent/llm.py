@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from openai import AsyncOpenAI
+import httpx
 
 from productivity_agent.analyzer import ProductivityAnalyzer
 from productivity_agent.config import Settings
@@ -17,16 +17,20 @@ logger = logging.getLogger(__name__)
 class LLMGenerator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._client: AsyncOpenAI | None = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def available(self) -> bool:
-        return bool(self.settings.openai_api_key)
+        return bool(self.settings.openrouter_api_key)
 
     @property
-    def client(self) -> AsyncOpenAI:
+    def client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = AsyncOpenAI(api_key=self.settings.openai_api_key)
+            self._client = httpx.AsyncClient(
+                base_url=self.settings.openrouter_base_url.rstrip("/"),
+                timeout=httpx.Timeout(45.0, connect=30.0),
+                headers=self._headers(),
+            )
         return self._client
 
     async def generate(self, mode: str, snapshot: AnalysisSnapshot, extra: dict[str, Any] | None = None) -> str:
@@ -37,15 +41,14 @@ class LLMGenerator:
 
         payload = self._payload(mode=mode, snapshot=snapshot, analyzer=analyzer, extra=extra)
         try:
-            response = await self.client.responses.create(
-                model=self.settings.openai_model,
+            text = await self._chat_completion(
+                model=self.settings.openrouter_model,
                 instructions=_instructions_for(mode),
-                input=json.dumps(payload, ensure_ascii=False),
-                max_output_tokens=1400,
+                payload=payload,
             )
-            return _clean_output(response.output_text.strip()) or fallback
+            return _clean_output(text.strip()) or fallback
         except Exception as exc:  # noqa: BLE001 - fallback is more important than surfacing SDK internals.
-            logger.exception("OpenAI generation failed: %s", exc)
+            logger.exception("OpenRouter generation failed: %s", exc)
             return fallback
 
     async def chat(
@@ -78,16 +81,41 @@ class LLMGenerator:
             },
         )
         try:
-            response = await self.client.responses.create(
-                model=self.settings.openai_model,
+            text = await self._chat_completion(
+                model=self.settings.openrouter_model,
                 instructions=_instructions_for("chat"),
-                input=json.dumps(payload, ensure_ascii=False),
-                max_output_tokens=1400,
+                payload=payload,
             )
-            return _clean_output(response.output_text.strip()) or fallback
+            return _clean_output(text.strip()) or fallback
         except Exception as exc:  # noqa: BLE001 - fallback is more important than surfacing SDK internals.
-            logger.exception("OpenAI chat failed: %s", exc)
+            logger.exception("OpenRouter chat failed: %s", exc)
             return fallback
+
+    async def generate_image(self, prompt: str) -> str | None:
+        if not self.available:
+            return None
+        request_payload: dict[str, Any] = {
+            "model": self.settings.openrouter_image_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "modalities": ["image", "text"],
+            "image_config": {
+                "aspect_ratio": "16:9",
+                "image_size": "1024x576",
+            },
+        }
+        try:
+            response = await self.client.post("/chat/completions", json=request_payload)
+            response.raise_for_status()
+            data = response.json()
+            message = data["choices"][0]["message"]
+            images = message.get("images") or []
+            if not images:
+                return None
+            image = images[0]
+            return (image.get("image_url") or image.get("imageUrl") or {}).get("url")
+        except Exception as exc:  # noqa: BLE001 - image generation should not break bot flow.
+            logger.exception("OpenRouter image generation failed: %s", exc)
+            return None
 
     def _payload(
         self,
@@ -105,6 +133,31 @@ class LLMGenerator:
             "unavailable_sources": [error.source.value for error in snapshot.errors],
             "extra": extra or {},
         }
+
+    async def _chat_completion(self, *, model: str, instructions: str, payload: dict[str, Any]) -> str:
+        request_payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            "max_tokens": 1400,
+        }
+        response = await self.client.post("/chat/completions", json=request_payload)
+        response.raise_for_status()
+        data = response.json()
+        return str(data["choices"][0]["message"].get("content") or "")
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.settings.openrouter_http_referer:
+            headers["HTTP-Referer"] = self.settings.openrouter_http_referer
+        if self.settings.openrouter_app_title:
+            headers["X-OpenRouter-Title"] = self.settings.openrouter_app_title
+        return headers
 
 
 def _instructions_for(mode: str) -> str:
@@ -167,7 +220,8 @@ def _instructions_for(mode: str) -> str:
             "предложи отправить явную команду или коротко объясни, что нужно подтвердить. "
             "Если пользователь спрашивает про систему эффективности или сна, объясни, что можно писать фразы "
             "вроде «закончил работу в 21:10», «начал отход ко сну в 22:40», «лег спать в 23:25», "
-            "«проснулся в 07:40», «главный фокус выполнен», а отчет доступен через /effectiveness."
+            "«проснулся в 07:40», «главный фокус выполнен», отчет доступен через /effectiveness, "
+            "а картинка графика сна через /sleepchart."
         )
     return base + "Сформируй полезный краткий ответ по задачам."
 
@@ -182,7 +236,7 @@ def _clean_output(text: str) -> str:
         r"\bpayload\b",
         r"\bmetadata\b",
         r"\bscore\b",
-        r"\bOpenAI\b",
+        r"\bOpenRouter\b",
         r"\bgpt-[\w.-]+\b",
     )
     marker_re = re.compile("|".join(technical_markers), flags=re.IGNORECASE)
