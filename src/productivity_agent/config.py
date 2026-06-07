@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     )
 
     openrouter_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
-    openrouter_model: str = Field(default="~google/gemini-flash-latest", validation_alias="OPENROUTER_MODEL")
+    openrouter_model: str = Field(default="google/gemini-2.5-flash-lite", validation_alias="OPENROUTER_MODEL")
     openrouter_image_model: str = Field(
         default="google/gemini-2.5-flash-image",
         validation_alias="OPENROUTER_IMAGE_MODEL",

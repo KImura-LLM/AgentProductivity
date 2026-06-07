@@ -146,7 +146,7 @@ class LLMGenerator:
         response = await self.client.post("/chat/completions", json=request_payload)
         response.raise_for_status()
         data = response.json()
-        return str(data["choices"][0]["message"].get("content") or "")
+        return _message_content(data["choices"][0].get("message") or {})
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -224,6 +224,19 @@ def _instructions_for(mode: str) -> str:
             "а картинка графика сна через /sleepchart."
         )
     return base + "Сформируй полезный краткий ответ по задачам."
+
+
+def _message_content(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+    return ""
 
 
 def _clean_output(text: str) -> str:
