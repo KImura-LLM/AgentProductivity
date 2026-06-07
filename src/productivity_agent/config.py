@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     target_wake_time: str = Field(default="07:30", validation_alias="TARGET_WAKE_TIME")
     wind_down_time: str = Field(default="22:45", validation_alias="WIND_DOWN_TIME")
     work_shutdown_time: str = Field(default="21:30", validation_alias="WORK_SHUTDOWN_TIME")
+    telegram_connect_timeout: float = Field(default=30.0, validation_alias="TELEGRAM_CONNECT_TIMEOUT")
+    telegram_read_timeout: float = Field(default=30.0, validation_alias="TELEGRAM_READ_TIMEOUT")
+    telegram_write_timeout: float = Field(default=30.0, validation_alias="TELEGRAM_WRITE_TIMEOUT")
+    telegram_pool_timeout: float = Field(default=30.0, validation_alias="TELEGRAM_POOL_TIMEOUT")
+    telegram_get_updates_read_timeout: float = Field(
+        default=45.0,
+        validation_alias="TELEGRAM_GET_UPDATES_READ_TIMEOUT",
+    )
 
     app_state_path: Path = Field(default=Path(".state/agent-state.json"), validation_alias="APP_STATE_PATH")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
@@ -174,6 +182,11 @@ class Settings(BaseSettings):
             "target_wake_time": self.target_wake_time,
             "wind_down_time": self.wind_down_time,
             "work_shutdown_time": self.work_shutdown_time,
+            "telegram_connect_timeout": self.telegram_connect_timeout,
+            "telegram_read_timeout": self.telegram_read_timeout,
+            "telegram_write_timeout": self.telegram_write_timeout,
+            "telegram_pool_timeout": self.telegram_pool_timeout,
+            "telegram_get_updates_read_timeout": self.telegram_get_updates_read_timeout,
             "notion_databases": [db.name for db in self.notion_databases],
             "ticktick_configured": bool(self.ticktick_access_token or self.ticktick_refresh_token),
             "openai_model": self.openai_model,

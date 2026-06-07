@@ -25,7 +25,17 @@ Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 def build_application(settings: Settings, service: ProductivityService) -> Application:
     if not settings.has_telegram():
         raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_ID are required")
-    application = ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).build()
+    application = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .connect_timeout(settings.telegram_connect_timeout)
+        .read_timeout(settings.telegram_read_timeout)
+        .write_timeout(settings.telegram_write_timeout)
+        .pool_timeout(settings.telegram_pool_timeout)
+        .get_updates_read_timeout(settings.telegram_get_updates_read_timeout)
+        .post_init(post_init)
+        .build()
+    )
     application.bot_data["service"] = service
     application.bot_data["settings"] = settings
 
