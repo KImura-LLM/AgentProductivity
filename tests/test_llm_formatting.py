@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, date, datetime
 
+import pytest
+
 from productivity_agent.analyzer import ProductivityAnalyzer
 from productivity_agent.config import Settings
 from productivity_agent.llm import LLMGenerator, _clean_output
@@ -48,3 +50,40 @@ def test_clean_output_removes_leaked_technical_lines() -> None:
     )
 
     assert _clean_output(text) == "📅 План\n• Сделать важное"
+
+
+@pytest.mark.asyncio
+async def test_sleep_chat_fallback_stays_sleep_scoped() -> None:
+    task = NormalizedTask(
+        id="task-1",
+        source=TaskSource.TICKTICK,
+        title="Купить продукты",
+        status=TaskStatus.TODO,
+    )
+    snapshot = AnalysisSnapshot(
+        tasks=[task],
+        generated_at=datetime(2026, 6, 7, 10, 0, tzinfo=UTC),
+        timezone="Europe/Moscow",
+    )
+    generator = LLMGenerator(Settings(OPENROUTER_API_KEY=""))
+
+    response = await generator.chat(
+        "как у меня дела со сном?",
+        snapshot,
+        effectiveness={
+            "targets": {"sleep_time": "22:00", "wake_time": "07:30"},
+            "recent_days": [
+                {
+                    "sleep_time": "23:40",
+                    "wake_time": "07:45",
+                    "sleep_score": 63,
+                    "sleep_deviation_reason": "поздно закончил работу",
+                }
+            ],
+        },
+    )
+
+    assert "Сон" in response
+    assert "Sleep score" in response
+    assert "Купить продукты" not in response
+    assert "План" not in response

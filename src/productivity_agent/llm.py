@@ -59,25 +59,26 @@ class LLMGenerator:
         effectiveness: dict[str, Any] | None = None,
     ) -> str:
         analyzer = ProductivityAnalyzer(today=snapshot.generated_at.date())
-        fallback = (
-            "💬 Диалог\n"
-            "Сейчас могу надежно ответить по задачам локальным планом, а для изменений задач попрошу подтверждение. "
-            "Для эффективности можно записывать: «закончил работу в 21:10», «начал отход ко сну в 22:40», "
-            "«лег спать в 23:25», «проснулся в 07:40», «главный фокус выполнен». Отчет: /effectiveness.\n\n"
-            f"{analyzer.deterministic_today(snapshot.tasks)}"
-        )
+        intent = _chat_intent(message)
+        fallback = _chat_fallback(message, snapshot, analyzer, effectiveness or {}, intent)
         fallback = _append_unavailable_sources(fallback, snapshot)
         if not self.available:
             return fallback
 
+        tasks = snapshot.tasks if intent in {"tasks", "mixed"} else []
+        task_errors = snapshot.errors if intent in {"tasks", "mixed"} else []
+        chat_snapshot = snapshot.model_copy(update={"tasks": tasks, "errors": task_errors})
         payload = self._payload(
             mode="chat",
-            snapshot=snapshot,
+            snapshot=chat_snapshot,
             analyzer=analyzer,
             extra={
                 "user_message": message,
                 "history": history or [],
                 "effectiveness": effectiveness or {},
+                "conversation_intent": intent,
+                "task_context_available": bool(snapshot.tasks),
+                "task_context_included": bool(tasks),
             },
         )
         try:
@@ -212,10 +213,14 @@ def _instructions_for(mode: str) -> str:
         return (
             base
             + "Ответь на обычное сообщение пользователя с учетом истории диалога и задач из контекста. "
+            "Не выдавай полный план дня, список всех задач, шаблон брифинга или отчет по всем источникам, "
+            "если пользователь явно не просит план, задачи, брифинг, проектный обзор, фокус или отчет. "
+            "На небольшой вопрос или утверждение отвечай свободно и коротко: 2-6 предложений, только по теме. "
+            "Если пользователь спрашивает про сон, отвечай только про сон и последние sleep-метрики; "
+            "задачи упоминай только если он сам связал вопрос с задачами или работой. "
             "Смешанные сообщения обрабатывай гибко: если пользователь одновременно просит действие, совет, "
-            "систему привычек или объяснение возможностей, ответь по всем частям, а не только списком задач. "
-            "Показывай, что ты умеешь планировать, анализировать перегруз, вести привычку сна, собирать метрики "
-            "эффективности, учитывать причины отклонений сна и давать короткие рекомендации. "
+            "систему привычек или объяснение возможностей, ответь по всем частям, но не превращай ответ "
+            "в общий список задач без явной просьбы. "
             "Если пользователь просит план, задачи, приоритеты или проектный обзор, "
             "используй данные Notion и TickTick. "
             "Если пользователь просит создать, закрыть или перенести задачу, не утверждай, что действие выполнено; "
@@ -226,6 +231,82 @@ def _instructions_for(mode: str) -> str:
             "а картинка графика сна через /sleepchart."
         )
     return base + "Сформируй полезный краткий ответ по задачам."
+
+
+def _chat_intent(message: str) -> str:
+    lowered = message.lower()
+    task_markers = (
+        "задач",
+        "делать",
+        "план",
+        "брифинг",
+        "приоритет",
+        "дедлайн",
+        "проект",
+        "notion",
+        "ticktick",
+        "фокус",
+        "просроч",
+        "перенести",
+    )
+    sleep_markers = ("сн", "спал", "спала", "уснул", "уснула", "проснулся", "проснулась", "лег", "легла")
+    has_tasks = any(marker in lowered for marker in task_markers)
+    has_sleep = any(marker in lowered for marker in sleep_markers)
+    if has_tasks and has_sleep:
+        return "mixed"
+    if has_tasks:
+        return "tasks"
+    if has_sleep:
+        return "sleep"
+    return "general"
+
+
+def _chat_fallback(
+    message: str,
+    snapshot: AnalysisSnapshot,
+    analyzer: ProductivityAnalyzer,
+    effectiveness: dict[str, Any],
+    intent: str,
+) -> str:
+    if intent == "tasks":
+        return analyzer.deterministic_today(snapshot.tasks)
+    if intent == "mixed":
+        return (
+            f"{_sleep_fallback(effectiveness)}\n\n"
+            "По задачам могу дать полный план, если напишешь «план на сегодня» или /today."
+        )
+    if intent == "sleep":
+        return _sleep_fallback(effectiveness)
+    return (
+        "💬 Принял.\n\n"
+        "Могу ответить коротко по конкретному вопросу, а полный план задач дам только когда ты прямо попросишь "
+        "план, брифинг, фокус или список задач."
+    )
+
+
+def _sleep_fallback(effectiveness: dict[str, Any]) -> str:
+    targets = effectiveness.get("targets") or {}
+    recent_days = effectiveness.get("recent_days") or []
+    if not recent_days:
+        return (
+            "🌙 Сон\n\n"
+            "Пока мало данных по сну. Записывай короткими фразами: «лег спать в 22:10» и «проснулся в 07:30». "
+            f"Цель сейчас: лечь до {targets.get('sleep_time', '22:00')}."
+        )
+    latest = recent_days[-1]
+    sleep_score = latest.get("sleep_score")
+    sleep_time = latest.get("sleep_time") or "нет данных"
+    wake_time = latest.get("wake_time") or "нет данных"
+    reason = latest.get("sleep_deviation_reason") or latest.get("wake_deviation_reason")
+    text = (
+        "🌙 Сон\n\n"
+        f"Последняя запись: сон {sleep_time}, подъем {wake_time}. "
+        f"Sleep score: {sleep_score if sleep_score is not None else 'нет данных'}/100. "
+        f"Цель: лечь до {targets.get('sleep_time', '22:00')}, подъем около {targets.get('wake_time', '07:30')}."
+    )
+    if reason:
+        text += f"\n\nПоследняя отмеченная причина отклонения: {reason}."
+    return text
 
 
 def _message_content(message: dict[str, Any]) -> str:
