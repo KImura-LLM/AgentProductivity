@@ -257,6 +257,13 @@ def is_compound_message(text: str) -> bool:
     return any(marker in lowered for marker in ("рекомендац", "посовет", "можешь", "систем", "эффективн", "?"))
 
 
+def should_auto_record_effectiveness(text: str, now: datetime, tzinfo: ZoneInfo) -> bool:
+    if is_compound_message(text):
+        return False
+    parsed = parse_effectiveness_text(text, now=now, tzinfo=tzinfo)
+    return parsed is not None
+
+
 def parse_natural_command(text: str) -> str | None:
     lowered = text.lower().strip()
     if lowered in {"да", "yes", "y"}:

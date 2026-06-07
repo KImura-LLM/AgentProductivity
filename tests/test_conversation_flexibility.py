@@ -1,8 +1,10 @@
+from datetime import datetime
+
 import pytest
 
 from productivity_agent.config import Settings
 from productivity_agent.models import TaskCollection
-from productivity_agent.parsing import parse_natural_command
+from productivity_agent.parsing import parse_natural_command, should_auto_record_effectiveness
 from productivity_agent.services import ProductivityService
 from productivity_agent.storage import JsonStateStore
 
@@ -31,6 +33,24 @@ def test_compound_reschedule_message_stays_conversational() -> None:
 
 def test_short_reschedule_message_stays_actionable() -> None:
     assert parse_natural_command("Перенеси задачу отчет на завтра") == "reschedule"
+
+
+def test_short_sleep_metric_auto_records() -> None:
+    settings = Settings()
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=settings.tzinfo)
+
+    assert should_auto_record_effectiveness("лег спать в 22:10", now=now, tzinfo=settings.tzinfo)
+
+
+def test_compound_sleep_message_stays_conversational() -> None:
+    settings = Settings()
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=settings.tzinfo)
+    message = (
+        "Я лег спать в 01:10, проснулся в 08:20, потому что долго не мог остановить работу, "
+        "можешь разобрать почему так произошло и что поменять завтра?"
+    )
+
+    assert not should_auto_record_effectiveness(message, now=now, tzinfo=settings.tzinfo)
 
 
 @pytest.mark.asyncio

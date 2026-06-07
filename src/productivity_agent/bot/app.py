@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 from productivity_agent.config import Settings
-from productivity_agent.parsing import parse_natural_command, parse_status_change
+from productivity_agent.parsing import parse_natural_command, parse_status_change, should_auto_record_effectiveness
 from productivity_agent.services import ProductivityService
 
 logger = logging.getLogger(__name__)
@@ -201,10 +201,12 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, await service.start_status_change(text, update.effective_user.id))
         return
 
-    effectiveness_entry = await service.record_effectiveness(text)
-    if effectiveness_entry:
-        await _reply(update, effectiveness_entry)
-        return
+    settings: Settings = context.application.bot_data["settings"]
+    if should_auto_record_effectiveness(text, now=service._now(), tzinfo=settings.tzinfo):
+        effectiveness_entry = await service.record_effectiveness(text)
+        if effectiveness_entry:
+            await _reply(update, effectiveness_entry)
+            return
 
     command = parse_natural_command(text)
     if command == "today":
