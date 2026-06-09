@@ -121,6 +121,16 @@ class Settings(BaseSettings):
         ZoneInfo(value)
         return value
 
+    @field_validator("notion_version")
+    @classmethod
+    def validate_notion_version(cls, value: str) -> str:
+        if not value:
+            return value
+        parts = value.split("-")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            raise ValueError("NOTION_VERSION must be a date in YYYY-MM-DD format")
+        return value
+
     @field_validator("telegram_allowed_user_id", mode="before")
     @classmethod
     def blank_user_id_is_missing(cls, value: Any) -> Any:
