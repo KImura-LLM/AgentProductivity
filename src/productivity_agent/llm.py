@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from typing import Any
 
 import httpx
@@ -10,6 +11,7 @@ import httpx
 from productivity_agent.analyzer import ProductivityAnalyzer
 from productivity_agent.config import Settings
 from productivity_agent.models import AnalysisSnapshot
+from productivity_agent.parsing import ParsedEffectivenessText
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +120,36 @@ class LLMGenerator:
             logger.exception("OpenRouter image generation failed: %s", exc)
             return None
 
+    async def extract_effectiveness(
+        self,
+        message: str,
+        *,
+        now_iso: str,
+        target_sleep_time: str,
+    ) -> ParsedEffectivenessText | None:
+        if not self.available:
+            return None
+        payload = {
+            "message": message,
+            "now": now_iso,
+            "target_sleep_time": target_sleep_time,
+        }
+        try:
+            text = await self._chat_completion(
+                model=self.settings.openrouter_model,
+                instructions=_instructions_for("effectiveness_extract"),
+                payload=payload,
+                max_tokens=500,
+                temperature=0,
+            )
+            raw = _extract_json_object(text)
+            if not raw:
+                return None
+            return _effectiveness_from_json(raw, note=message)
+        except Exception as exc:  # noqa: BLE001 - local parser remains the fallback.
+            logger.exception("OpenRouter effectiveness extraction failed: %s", exc)
+            return None
+
     def _payload(
         self,
         *,
@@ -135,15 +167,25 @@ class LLMGenerator:
             "extra": extra or {},
         }
 
-    async def _chat_completion(self, *, model: str, instructions: str, payload: dict[str, Any]) -> str:
+    async def _chat_completion(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        payload: dict[str, Any],
+        max_tokens: int = 1400,
+        temperature: float | None = None,
+    ) -> str:
         request_payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-            "max_tokens": 1400,
+            "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            request_payload["temperature"] = temperature
         response = await self.client.post("/chat/completions", json=request_payload)
         response.raise_for_status()
         data = response.json()
@@ -226,9 +268,23 @@ def _instructions_for(mode: str) -> str:
             "Если пользователь просит создать, закрыть или перенести задачу, не утверждай, что действие выполнено; "
             "предложи отправить явную команду или коротко объясни, что нужно подтвердить. "
             "Если пользователь спрашивает про систему эффективности или сна, объясни, что можно писать фразы "
-            "вроде «закончил работу в 21:10», «начал отход ко сну в 22:40», «лег спать в 23:25», "
-            "«проснулся в 07:40», «главный фокус выполнен», отчет доступен через /effectiveness, "
+            "вроде «лег спать в 23:25» или «вчера лег в час ночи, потому что засиделся с другом, "
+            "проснулся в 09:51», отчет доступен через /effectiveness, "
             "а картинка графика сна через /sleepchart."
+        )
+    if mode == "effectiveness_extract":
+        return (
+            "Ты извлекаешь структурированные факты сна из одного сообщения пользователя. "
+            "Верни только JSON-объект без markdown и без пояснений. "
+            "Поля: sleep_time, wake_time, day, sleep_deviation_reason, wake_deviation_reason. "
+            "Формат времени строго HH:MM в 24-часовом формате или null. "
+            "Формат day строго YYYY-MM-DD или null. "
+            "Извлекай только явно сказанные факты, не придумывай время и причины. "
+            "Фразы вроде «в час ночи», «около часа ночи», «в десять утра», «полночь» нормализуй в HH:MM. "
+            "Причину нарушения сна заполняй только если пользователь объяснил, почему лег позже. "
+            "Поздний подъем сам по себе не является нарушением режима сна: wake_deviation_reason обычно null. "
+            "Если в сообщении есть «вчера», «сегодня» или «позавчера», вычисли day относительно поля now. "
+            "Если фактов сна или подъема нет, верни все поля null."
         )
     return base + "Сформируй полезный краткий ответ по задачам."
 
@@ -297,12 +353,12 @@ def _sleep_fallback(effectiveness: dict[str, Any]) -> str:
     sleep_score = latest.get("sleep_score")
     sleep_time = latest.get("sleep_time") or "нет данных"
     wake_time = latest.get("wake_time") or "нет данных"
-    reason = latest.get("sleep_deviation_reason") or latest.get("wake_deviation_reason")
+    reason = latest.get("sleep_deviation_reason")
     text = (
         "🌙 Сон\n\n"
         f"Последняя запись: сон {sleep_time}, подъем {wake_time}. "
         f"Sleep score: {sleep_score if sleep_score is not None else 'нет данных'}/100. "
-        f"Цель: лечь до {targets.get('sleep_time', '22:00')}, подъем около {targets.get('wake_time', '07:30')}."
+        f"Цель: лечь до {targets.get('sleep_time', '22:00')}. Подъем сохраняю справочно."
     )
     if reason:
         text += f"\n\nПоследняя отмеченная причина отклонения: {reason}."
@@ -320,6 +376,63 @@ def _message_content(message: dict[str, Any]) -> str:
                 parts.append(item["text"])
         return "\n".join(parts)
     return ""
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _effectiveness_from_json(raw: dict[str, Any], *, note: str) -> ParsedEffectivenessText | None:
+    sleep_time = _safe_time(raw.get("sleep_time"))
+    wake_time = _safe_time(raw.get("wake_time"))
+    parsed_day = _safe_day(raw.get("day"))
+    sleep_reason = _safe_text(raw.get("sleep_deviation_reason"))
+    wake_reason = _safe_text(raw.get("wake_deviation_reason"))
+    if not any((sleep_time, wake_time, parsed_day, sleep_reason, wake_reason)):
+        return None
+    return ParsedEffectivenessText(
+        sleep_time=sleep_time,
+        wake_time=wake_time,
+        day=parsed_day,
+        sleep_deviation_reason=sleep_reason,
+        wake_deviation_reason=wake_reason,
+        note=note.strip() or None,
+    )
+
+
+def _safe_time(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)", value.strip())
+    if not match:
+        return None
+    return f"{match.group('hour')}:{match.group('minute')}"
+
+
+def _safe_day(value: Any) -> date | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _safe_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip(" \n\t.,;:!?")
+    return cleaned[:500] or None
 
 
 def _clean_output(text: str) -> str:

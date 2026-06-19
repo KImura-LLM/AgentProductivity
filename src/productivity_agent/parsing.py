@@ -27,7 +27,47 @@ class ParsedEffectivenessText:
     wind_down_time: str | None = None
     work_finished_time: str | None = None
     focus_done: bool | None = None
+    day: date | None = None
+    sleep_deviation_reason: str | None = None
+    wake_deviation_reason: str | None = None
     note: str | None = None
+
+
+SLEEP_MARKER_PATTERNS = (
+    r"\bлег(?:ла)?(?:\s+спать)?\b",
+    r"\bуснул(?:а)?\b",
+    r"\bсон\s+в\b",
+    r"\bпош[её]л\s+спать\b",
+    r"\bпошла\s+спать\b",
+)
+WAKE_MARKER_PATTERNS = (
+    r"\bпроснулся\b",
+    r"\bпроснулась\b",
+    r"\bвстал\b",
+    r"\bвстала\b",
+    r"\bпод[ъь]ем\s+в\b",
+    r"\bподъём\s+в\b",
+    r"\bпросыпаюсь\b",
+)
+WIND_DOWN_MARKER_PATTERNS = (
+    r"\bотход\s+ко\s+сну\b",
+    r"\bготовиться\s+ко\s+сну\b",
+    r"\bпойду\s+спать\b",
+    r"\bпойду\s+через\b",
+    r"\bрежим\s+сна\b",
+)
+WORK_FINISHED_MARKER_PATTERNS = (
+    r"\bзакончил(?:а)?\s+работу\b",
+    r"\bзавершил(?:а)?\s+работу\b",
+    r"\bзакончил(?:а)?\s+задачи\b",
+    r"\bвыключил(?:а)?\s+ноутбук\b",
+)
+TIME_EVENT_MARKER_PATTERNS = (
+    *SLEEP_MARKER_PATTERNS,
+    *WAKE_MARKER_PATTERNS,
+    *WIND_DOWN_MARKER_PATTERNS,
+    *WORK_FINISHED_MARKER_PATTERNS,
+)
 
 
 def detect_source(text: str) -> str | None:
@@ -114,53 +154,10 @@ def parse_status_change(text: str) -> tuple[str, str] | None:
 
 def parse_effectiveness_text(text: str, now: datetime, tzinfo: ZoneInfo) -> ParsedEffectivenessText | None:
     lowered = text.lower().strip()
-    fields: dict[str, str | bool | None] = {
-        "sleep_time": None,
-        "wake_time": None,
-        "wind_down_time": None,
-        "work_finished_time": None,
-        "focus_done": None,
-    }
-
-    has_sleep = any(marker in lowered for marker in ("лег спать", "легла спать", "уснул", "уснула", "сон в"))
-    has_wake = any(
-        marker in lowered
-        for marker in (
-            "проснулся",
-            "проснулась",
-            "встал",
-            "встала",
-            "подъем в",
-            "подъём в",
-            "просыпаюсь",
-            "проснулся в",
-        )
-    )
-    has_wind_down = any(
-        marker in lowered
-        for marker in (
-            "отход ко сну",
-            "готовиться ко сну",
-            "пошел спать",
-            "пошла спать",
-            "пойду спать",
-            "пойду через",
-            "режим сна",
-        )
-    )
-    has_work_finished = any(
-        marker in lowered
-        for marker in (
-            "закончил работу",
-            "закончила работу",
-            "завершил работу",
-            "завершила работу",
-            "закончил задачи",
-            "закончила задачи",
-            "выключил ноутбук",
-            "выключила ноутбук",
-        )
-    )
+    has_sleep = _has_marker(text, SLEEP_MARKER_PATTERNS)
+    has_wake = _has_marker(text, WAKE_MARKER_PATTERNS)
+    has_wind_down = _has_marker(text, WIND_DOWN_MARKER_PATTERNS)
+    has_work_finished = _has_marker(text, WORK_FINISHED_MARKER_PATTERNS)
     has_focus_done = any(
         marker in lowered
         for marker in (
@@ -187,33 +184,42 @@ def parse_effectiveness_text(text: str, now: datetime, tzinfo: ZoneInfo) -> Pars
     if not any((has_sleep, has_wake, has_wind_down, has_work_finished, has_focus_done, has_focus_missed)):
         return None
 
-    time_value = _extract_time(text, now=now, tzinfo=tzinfo)
+    sleep_time = _extract_event_time(text, SLEEP_MARKER_PATTERNS, now=now, tzinfo=tzinfo) if has_sleep else None
+    wake_time = _extract_event_time(text, WAKE_MARKER_PATTERNS, now=now, tzinfo=tzinfo) if has_wake else None
+    wind_down_time = (
+        _extract_event_time(text, WIND_DOWN_MARKER_PATTERNS, now=now, tzinfo=tzinfo) if has_wind_down else None
+    )
+    work_finished_time = (
+        _extract_event_time(text, WORK_FINISHED_MARKER_PATTERNS, now=now, tzinfo=tzinfo)
+        if has_work_finished
+        else None
+    )
     explicit_now = any(marker in lowered for marker in ("сейчас", "только что"))
-    if time_value is None and explicit_now:
-        time_value = now.strftime("%H:%M")
+    if explicit_now:
+        sleep_time = sleep_time or (now.strftime("%H:%M") if has_sleep else None)
+        wake_time = wake_time or (now.strftime("%H:%M") if has_wake else None)
+        wind_down_time = wind_down_time or (now.strftime("%H:%M") if has_wind_down else None)
+        work_finished_time = work_finished_time or (now.strftime("%H:%M") if has_work_finished else None)
 
-    if has_sleep:
-        fields["sleep_time"] = time_value
-    if has_wake:
-        fields["wake_time"] = time_value
-    if has_wind_down:
-        fields["wind_down_time"] = time_value
-    if has_work_finished:
-        fields["work_finished_time"] = time_value
+    focus_done: bool | None = None
     if has_focus_missed:
-        fields["focus_done"] = False
+        focus_done = False
     elif has_focus_done:
-        fields["focus_done"] = True
+        focus_done = True
 
-    if time_value is None and fields["focus_done"] is None:
+    if not any((sleep_time, wake_time, wind_down_time, work_finished_time)) and focus_done is None:
         return None
 
+    reason = _extract_reason(text)
     return ParsedEffectivenessText(
-        sleep_time=fields["sleep_time"] if isinstance(fields["sleep_time"], str) else None,
-        wake_time=fields["wake_time"] if isinstance(fields["wake_time"], str) else None,
-        wind_down_time=fields["wind_down_time"] if isinstance(fields["wind_down_time"], str) else None,
-        work_finished_time=fields["work_finished_time"] if isinstance(fields["work_finished_time"], str) else None,
-        focus_done=fields["focus_done"] if isinstance(fields["focus_done"], bool) else None,
+        sleep_time=sleep_time,
+        wake_time=wake_time,
+        wind_down_time=wind_down_time,
+        work_finished_time=work_finished_time,
+        focus_done=focus_done,
+        day=_extract_day(text, now=now, tzinfo=tzinfo),
+        sleep_deviation_reason=reason if reason and has_sleep else None,
+        wake_deviation_reason=reason if reason and has_wake and not has_sleep else None,
         note=text.strip(),
     )
 
@@ -232,6 +238,10 @@ def _extract_time(text: str, now: datetime, tzinfo: ZoneInfo) -> str | None:
         parsed_dt = now.astimezone(tzinfo) + timedelta(minutes=int(relative_minutes.group("minutes")))
         return parsed_dt.strftime("%H:%M")
 
+    spoken_time = _extract_spoken_time(text)
+    if spoken_time:
+        return spoken_time
+
     matches = search_dates(
         text,
         languages=["ru", "en"],
@@ -244,16 +254,127 @@ def _extract_time(text: str, now: datetime, tzinfo: ZoneInfo) -> str | None:
     )
     if not matches:
         return None
-    _, parsed_dt = matches[-1]
-    if not parsed_dt.hour and not parsed_dt.minute:
+    for matched_text, parsed_dt in reversed(matches):
+        if not _dateparser_match_has_time(matched_text):
+            continue
+        if not parsed_dt.hour and not parsed_dt.minute:
+            continue
+        return parsed_dt.strftime("%H:%M")
+    return None
+
+
+def _has_marker(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _extract_event_time(text: str, patterns: tuple[str, ...], now: datetime, tzinfo: ZoneInfo) -> str | None:
+    marker = _first_marker(text, patterns)
+    if not marker:
         return None
-    return parsed_dt.strftime("%H:%M")
+    end = _next_time_event_start(text, marker.start()) or len(text)
+    after_marker = text[marker.start() : end]
+    time_value = _extract_time(after_marker, now=now, tzinfo=tzinfo)
+    if time_value:
+        return time_value
+    with_prefix = text[max(0, marker.start() - 32) : end]
+    return _extract_time(with_prefix, now=now, tzinfo=tzinfo)
+
+
+def _first_marker(text: str, patterns: tuple[str, ...]) -> re.Match[str] | None:
+    matches = [
+        match
+        for pattern in patterns
+        if (match := re.search(pattern, text, flags=re.IGNORECASE))
+    ]
+    if not matches:
+        return None
+    return min(matches, key=lambda match: match.start())
+
+
+def _next_time_event_start(text: str, start: int) -> int | None:
+    starts = [
+        match.start()
+        for pattern in TIME_EVENT_MARKER_PATTERNS
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE)
+        if match.start() > start
+    ]
+    return min(starts) if starts else None
+
+
+def _extract_spoken_time(text: str) -> str | None:
+    patterns = (
+        r"\b(?:в|около|примерно)\s+(?P<hour_word>полночь|полдень|час|(?P<hour>\d{1,2}))"
+        r"(?:\s*час(?:ов|а)?)?(?:\s*(?P<period>ночи|утра|дня|вечера))?\b",
+        r"\b(?P<hour>\d{1,2})\s*(?:час(?:ов|а)?)?\s*(?P<period>ночи|утра|дня|вечера)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        hour_word = match.groupdict().get("hour_word")
+        hour_value = match.groupdict().get("hour")
+        period = match.groupdict().get("period")
+        hour = _normalize_spoken_hour(hour_word or hour_value or "", period)
+        if hour is not None:
+            return f"{hour:02d}:00"
+    return None
+
+
+def _normalize_spoken_hour(value: str, period: str | None) -> int | None:
+    lowered = value.lower()
+    if lowered == "полночь":
+        return 0
+    if lowered == "полдень":
+        return 12
+    hour = 1 if lowered == "час" else int(lowered) if lowered.isdigit() else None
+    if hour is None or hour > 23:
+        return None
+    if period in {"вечера"} and 1 <= hour < 12:
+        hour += 12
+    elif period == "дня" and 1 <= hour < 12:
+        hour += 12
+    elif period == "ночи" and hour == 12:
+        hour = 0
+    elif period == "утра" and hour == 12:
+        hour = 0
+    return hour
+
+
+def _dateparser_match_has_time(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\d|час|полноч|полден|утра|вечера|ночи|дня|мин", lowered))
+
+
+def _extract_day(text: str, now: datetime, tzinfo: ZoneInfo) -> date | None:
+    lowered = text.lower()
+    today = now.astimezone(tzinfo).date()
+    if "позавчера" in lowered:
+        return today - timedelta(days=2)
+    if "вчера" in lowered:
+        return today - timedelta(days=1)
+    if "сегодня" in lowered:
+        return today
+    return None
+
+
+def _extract_reason(text: str) -> str | None:
+    match = re.search(r"\b(?:потому\s*,?\s*что|так\s+как|из-за|из\s+за)\s+(?P<reason>.+)", text, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"(?:^|[,;])\s*так\s+(?P<reason>.+)", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    reason = match.group("reason")
+    reason = re.split(
+        r"[,;]?\s+(?:и\s+)?(?:проснул\w*|встал[а]?|под[ъь]ем|подъём)\b",
+        reason,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    reason = reason.strip(" .,!?:;")
+    return reason[:500] or None
 
 def is_compound_message(text: str) -> bool:
     lowered = text.lower().strip()
-    words = re.findall(r"\w+", lowered, flags=re.UNICODE)
-    if len(words) >= 22:
-        return True
     return any(marker in lowered for marker in ("рекомендац", "посовет", "можешь", "систем", "эффективн", "?"))
 
 
@@ -261,7 +382,9 @@ def should_auto_record_effectiveness(text: str, now: datetime, tzinfo: ZoneInfo)
     if is_compound_message(text):
         return False
     parsed = parse_effectiveness_text(text, now=now, tzinfo=tzinfo)
-    return parsed is not None
+    if parsed and any((parsed.sleep_time, parsed.wake_time)):
+        return True
+    return _has_marker(text, SLEEP_MARKER_PATTERNS) or _has_marker(text, WAKE_MARKER_PATTERNS)
 
 
 def parse_natural_command(text: str) -> str | None:

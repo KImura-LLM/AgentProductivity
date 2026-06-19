@@ -3,7 +3,7 @@ from datetime import date, datetime
 import pytest
 
 from productivity_agent.config import Settings
-from productivity_agent.models import CandidateMatch, NormalizedTask, TaskSource, TaskStatus
+from productivity_agent.models import CandidateMatch, NormalizedTask, PendingAction, TaskSource, TaskStatus
 from productivity_agent.services import ProductivityService
 from productivity_agent.storage import JsonStateStore
 
@@ -59,3 +59,41 @@ async def test_done_requires_confirmation(tmp_path) -> None:
 
     assert "Отметил как выполненную" in result
     assert repository.completed == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_confirmation_is_rejected(tmp_path) -> None:
+    settings = Settings(
+        TELEGRAM_ALLOWED_USER_ID=123,
+        TELEGRAM_BOT_TOKEN="token",
+        APP_STATE_PATH=tmp_path / "state.json",
+    )
+    task = NormalizedTask(
+        id="task-1",
+        source=TaskSource.TICKTICK,
+        title="Подготовить отчет",
+        status=TaskStatus.TODO,
+        deadline=date(2026, 5, 24),
+    )
+    repository = FakeRepository(task)
+    store = JsonStateStore(tmp_path / "state.json")
+    service = ProductivityService(
+        settings=settings,
+        repository=repository,
+        llm=FakeLLM(),
+        state_store=store,
+    )
+    store.set_pending_action(
+        PendingAction(
+            kind="complete_task",
+            user_id=123,
+            summary="Закрыть задачу",
+            payload={"task": task.model_dump(mode="json")},
+            expires_at=datetime(2026, 1, 1, tzinfo=settings.tzinfo),
+        )
+    )
+
+    result = await service.handle_pending_response("да", user_id=123)
+
+    assert "Подтверждение устарело" in result
+    assert repository.completed == 0

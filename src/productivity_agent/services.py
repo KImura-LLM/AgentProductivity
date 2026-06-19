@@ -70,9 +70,8 @@ class ProductivityService:
         return (
             f"{generated}\n\n"
             "📈 Метрики дня\n"
-            "Когда будет удобно, ответь одной строкой: «закончил работу в 21:10», "
-            "«начал отход ко сну в 22:40», «пойду через 20 минут спать», "
-            "«лег спать в 23:25» или «главный фокус выполнен»."
+            "Когда будет удобно, ответь одной строкой: «лег спать в 23:25, потому что засиделся с другом» "
+            "и «проснулся в 07:40»."
         )
 
     async def project(self, project_name: str) -> str:
@@ -112,10 +111,8 @@ class ProductivityService:
             f"• Вечерний review: {safe['evening_review_time']}\n"
             f"• Недельный обзор: воскресенье {safe['weekly_review_time']}\n\n"
             "📈 Эффективность\n"
-            f"• Отбой: до {safe['target_sleep_time']}\n"
-            f"• Подъем: около {safe['target_wake_time']}\n"
-            f"• Отход ко сну: до {safe['wind_down_time']}\n"
-            f"• Завершить работу: до {safe['work_shutdown_time']}\n\n"
+            f"• Лечь спать: до {safe['target_sleep_time']}\n"
+            f"• Подъем: {safe['target_wake_time']} сохраняется справочно, без влияния на балл\n\n"
             "⌨️ Команды доступны в меню Telegram."
         )
 
@@ -200,7 +197,15 @@ class ProductivityService:
         normalized = text.strip().lower()
         if action.expired(now):
             self.state_store.clear_pending_action(user_id)
-            return "⌛ Подтверждение устарело.\n\nПовтори команду."
+            if action.kind == "record_sleep_reason" and parse_effectiveness_text(
+                text,
+                now=now,
+                tzinfo=self.settings.tzinfo,
+            ):
+                return None
+            if self._looks_like_pending_reply(action, normalized) or action.kind == "record_sleep_reason":
+                return "⌛ Подтверждение устарело.\n\nПовтори команду."
+            return None
 
         if normalized in NO_VALUES:
             self.state_store.clear_pending_action(user_id)
@@ -244,7 +249,7 @@ class ProductivityService:
         return None
 
     async def record_effectiveness(self, raw_text: str) -> str | None:
-        parsed = parse_effectiveness_text(raw_text, now=self._now(), tzinfo=self.settings.tzinfo)
+        parsed = await self._parse_effectiveness(raw_text)
         if not parsed:
             return None
 
@@ -256,9 +261,8 @@ class ProductivityService:
             update={
                 "sleep_time": parsed.sleep_time or entry.sleep_time,
                 "wake_time": parsed.wake_time or entry.wake_time,
-                "wind_down_time": parsed.wind_down_time or entry.wind_down_time,
-                "work_finished_time": parsed.work_finished_time or entry.work_finished_time,
-                "focus_done": parsed.focus_done if parsed.focus_done is not None else entry.focus_done,
+                "sleep_deviation_reason": parsed.sleep_deviation_reason or entry.sleep_deviation_reason,
+                "wake_deviation_reason": parsed.wake_deviation_reason or entry.wake_deviation_reason,
                 "notes": notes[-5:],
                 "updated_at": self._now(),
             }
@@ -270,17 +274,13 @@ class ProductivityService:
         response = (
             "📈 Записал метрику эффективности\n\n"
             f"• День: {entry.day.strftime('%d.%m.%Y')}\n"
-            f"• Сон: {entry.sleep_time or 'нет данных'} / цель до {self.settings.target_sleep_time}\n"
-            f"• Подъем: {entry.wake_time or 'нет данных'} / цель около {self.settings.target_wake_time}\n"
-            f"• Отход ко сну: {entry.wind_down_time or 'нет данных'} / цель до {self.settings.wind_down_time}\n"
-            f"• Работа завершена: {entry.work_finished_time or 'нет данных'} / "
-            f"цель до {self.settings.work_shutdown_time}\n"
-            f"• Главный фокус: {self._focus_label(entry.focus_done)}\n"
+            f"• Лечь спать: {entry.sleep_time or 'нет данных'} / цель до {self.settings.target_sleep_time}\n"
+            f"• Подъем: {entry.wake_time or 'нет данных'}\n"
             f"• Sleep score: {sleep_score}/100\n"
-            f"• Балл дня: {score}/100\n\n"
-            "Можешь писать так же: «закончил работу в 21:10», «начал отход ко сну в 22:40», "
-            "«пойду через 20 минут спать», «лег спать в 23:25», "
-            "«проснулся в 07:40», «главный фокус выполнен»."
+            f"• Балл дня: {score}/100\n"
+            f"• Нарушение режима сна: {self._sleep_disruption_label(entry)}\n\n"
+            "Можешь писать так же: «вчера лег в час ночи, потому что засиделся с другом, "
+            "проснулся в 09:51»."
         )
         if reason_prompt:
             response = f"{response}\n\n{reason_prompt}"
@@ -291,14 +291,10 @@ class ProductivityService:
         if not entries:
             return (
                 "📈 Эффективность\n\n"
-                "Пока нет записей. Я буду собирать минимум четыре сигнала: окончание работы, отход ко сну, "
-                "фактический сон, подъем и выполнение главного фокуса.\n\n"
+                "Пока нет записей. Я буду собирать фактический отбой, подъем и причину позднего отбоя.\n\n"
                 "Примеры:\n"
-                "• закончил работу в 21:10\n"
-                "• начал отход ко сну в 22:40\n"
                 "• лег спать в 23:25\n"
-                "• проснулся в 07:40\n"
-                "• главный фокус выполнен"
+                "• вчера лег в час ночи, потому что засиделся с другом, проснулся в 09:51"
             )
 
         scores = [self._effectiveness_score(entry) for entry in entries]
@@ -308,12 +304,7 @@ class ProductivityService:
         sleep_on_time = sum(
             1
             for entry in entries
-            if entry.sleep_time and self._minutes_late(entry.sleep_time, self.settings.target_sleep_time) <= 0
-        )
-        wake_on_time = sum(
-            1
-            for entry in entries
-            if entry.wake_time and abs(self._wake_minutes_late(entry.wake_time, self.settings.target_wake_time)) <= 30
+            if entry.sleep_time and not self._has_sleep_disruption(entry)
         )
         chart = "\n".join(self._effectiveness_chart_line(entry) for entry in entries)
         latest = entries[-1]
@@ -322,17 +313,14 @@ class ProductivityService:
             "📈 Эффективность\n\n"
             f"Средний балл за {len(entries)} дн.: {avg_score}/100\n"
             f"Средний sleep score: {avg_sleep_score}/100\n"
-            f"Сон вовремя: {sleep_on_time}/{len(entries)}\n"
-            f"Подъем около цели: {wake_on_time}/{len(entries)}\n"
-            f"Цели: работа до {self.settings.work_shutdown_time}, отход ко сну до {self.settings.wind_down_time}, "
-            f"сон до {self.settings.target_sleep_time}, подъем около {self.settings.target_wake_time}.\n\n"
+            f"Отбой вовремя: {sleep_on_time}/{len(entries)}\n"
+            f"Цель: лечь до {self.settings.target_sleep_time}. Подъем сохраняю справочно.\n\n"
             "График:\n"
             f"{chart}\n\n"
             "Последняя запись:\n"
             f"• {latest.day.strftime('%d.%m')}: сон {latest.sleep_time or '-'}, "
             f"подъем {latest.wake_time or '-'}, "
-            f"отход {latest.wind_down_time or '-'}, работа {latest.work_finished_time or '-'}, "
-            f"фокус {self._focus_label(latest.focus_done)}."
+            f"нарушение режима сна: {self._sleep_disruption_label(latest)}."
             f"{latest_reasons}"
         )
 
@@ -347,16 +335,15 @@ class ProductivityService:
                 "wake_time": entry.wake_time,
                 "sleep_score": self._sleep_score(entry),
                 "sleep_reason": entry.sleep_deviation_reason,
-                "wake_reason": entry.wake_deviation_reason,
             }
             for entry in entries
         ]
         prompt = (
             "Create a clean Russian-language sleep analytics chart image for a Telegram bot. "
             "Use a dark readable dashboard style with a line or bar chart for sleep score, "
-            "a compact table with dates, sleep time, wake time, and short reason labels. "
+            "a compact table with dates, sleep time, wake time, and short late-bedtime reason labels. "
             "Do not include any API names, JSON, technical metadata, or model names. "
-            f"Targets: sleep by {self.settings.target_sleep_time}, wake around {self.settings.target_wake_time}. "
+            f"Target: sleep by {self.settings.target_sleep_time}. Wake time is informational only. "
             f"Data: {rows}"
         )
         data_url = await self.llm.generate_image(prompt)
@@ -479,7 +466,60 @@ class ProductivityService:
     def _now(self) -> datetime:
         return now_in_timezone(self.settings.timezone)
 
+    async def _parse_effectiveness(self, raw_text: str) -> ParsedEffectivenessText | None:
+        local = parse_effectiveness_text(raw_text, now=self._now(), tzinfo=self.settings.tzinfo)
+        if not local and not self._looks_like_sleep_or_wake_report(raw_text):
+            return None
+        if (
+            local
+            and not any((local.sleep_time, local.wake_time))
+            and not self._looks_like_sleep_or_wake_report(raw_text)
+        ):
+            return None
+        llm_parsed = await self._extract_effectiveness_with_llm(raw_text)
+        parsed = self._merge_effectiveness(local, llm_parsed)
+        if not parsed or not any((parsed.sleep_time, parsed.wake_time)):
+            return None
+        return parsed
+
+    async def _extract_effectiveness_with_llm(self, raw_text: str) -> ParsedEffectivenessText | None:
+        extractor = getattr(self.llm, "extract_effectiveness", None)
+        if not callable(extractor):
+            return None
+        return await extractor(
+            raw_text,
+            now_iso=self._now().isoformat(),
+            target_sleep_time=self.settings.target_sleep_time,
+        )
+
+    @staticmethod
+    def _merge_effectiveness(
+        local: ParsedEffectivenessText | None,
+        llm_parsed: ParsedEffectivenessText | None,
+    ) -> ParsedEffectivenessText | None:
+        if not local:
+            return llm_parsed
+        if not llm_parsed:
+            return local
+        return ParsedEffectivenessText(
+            sleep_time=local.sleep_time or llm_parsed.sleep_time,
+            wake_time=local.wake_time or llm_parsed.wake_time,
+            day=local.day or llm_parsed.day,
+            sleep_deviation_reason=local.sleep_deviation_reason or llm_parsed.sleep_deviation_reason,
+            wake_deviation_reason=local.wake_deviation_reason or llm_parsed.wake_deviation_reason,
+            note=local.note or llm_parsed.note,
+        )
+
+    @staticmethod
+    def _looks_like_sleep_or_wake_report(text: str) -> bool:
+        lowered = text.lower()
+        sleep_markers = ("лег", "легла", "уснул", "уснула", "сон в", "пошел спать", "пошёл спать", "пошла спать")
+        wake_markers = ("проснулся", "проснулась", "встал", "встала", "подъем", "подъём")
+        return any(marker in lowered for marker in (*sleep_markers, *wake_markers))
+
     def _effectiveness_day(self, parsed: ParsedEffectivenessText) -> date:
+        if parsed.day:
+            return parsed.day
         now = self._now()
         if parsed.sleep_time and self._time_to_minutes(parsed.sleep_time) < 6 * 60 and now.hour < 12:
             return now.date() - timedelta(days=1)
@@ -493,8 +533,6 @@ class ProductivityService:
             "targets": {
                 "sleep_time": self.settings.target_sleep_time,
                 "wake_time": self.settings.target_wake_time,
-                "wind_down_time": self.settings.wind_down_time,
-                "work_shutdown_time": self.settings.work_shutdown_time,
             },
             "recent_days": [
                 {
@@ -503,54 +541,22 @@ class ProductivityService:
                     "sleep_score": self._sleep_score(entry),
                     "sleep_time": entry.sleep_time,
                     "wake_time": entry.wake_time,
-                    "wind_down_time": entry.wind_down_time,
-                    "work_finished_time": entry.work_finished_time,
-                    "focus_done": entry.focus_done,
                     "sleep_deviation_reason": entry.sleep_deviation_reason,
-                    "wake_deviation_reason": entry.wake_deviation_reason,
+                    "sleep_disruption": self._sleep_disruption_label(entry),
                 }
                 for entry in entries
             ],
         }
 
     def _effectiveness_score(self, entry: EffectivenessEntry) -> int:
-        score = 0
-        if entry.sleep_time:
-            late = self._minutes_late(entry.sleep_time, self.settings.target_sleep_time)
-            if late <= 0:
-                score += 45
-            elif late <= 30:
-                score += 35
-            elif late <= 60:
-                score += 25
-            elif late <= 120:
-                score += 10
-        if entry.wind_down_time:
-            late = self._minutes_late(entry.wind_down_time, self.settings.wind_down_time)
-            if late <= 0:
-                score += 25
-            elif late <= 30:
-                score += 18
-            elif late <= 60:
-                score += 10
-        if entry.work_finished_time:
-            late = self._minutes_late(entry.work_finished_time, self.settings.work_shutdown_time)
-            if late <= 0:
-                score += 20
-            elif late <= 30:
-                score += 14
-            elif late <= 60:
-                score += 8
-        if entry.focus_done is True:
-            score += 10
-        return score
+        return self._sleep_score(entry)
 
     def _effectiveness_chart_line(self, entry: EffectivenessEntry) -> str:
         score = self._effectiveness_score(entry)
         sleep_score = self._sleep_score(entry)
         filled = round(score / 10)
         bar = "█" * filled + "░" * (10 - filled)
-        sleep_on_time = entry.sleep_time and self._minutes_late(entry.sleep_time, self.settings.target_sleep_time) <= 0
+        sleep_on_time = entry.sleep_time and not self._has_sleep_disruption(entry)
         sleep_status = "сон ✓" if sleep_on_time else "сон ×"
         return (
             f"{entry.day.strftime('%d.%m')} {bar} день {score:3d} "
@@ -559,50 +565,26 @@ class ProductivityService:
         )
 
     def _sleep_score(self, entry: EffectivenessEntry) -> int:
-        score = 0
-        if entry.sleep_time:
-            late = self._minutes_late(entry.sleep_time, self.settings.target_sleep_time)
-            if late <= 0:
-                score += 45
-            elif late <= 30:
-                score += 35
-            elif late <= 60:
-                score += 25
-            elif late <= 120:
-                score += 10
-        if entry.wake_time:
-            late = abs(self._wake_minutes_late(entry.wake_time, self.settings.target_wake_time))
-            if late <= 15:
-                score += 35
-            elif late <= 30:
-                score += 28
-            elif late <= 60:
-                score += 18
-            elif late <= 120:
-                score += 8
-        if entry.wind_down_time:
-            late = self._minutes_late(entry.wind_down_time, self.settings.wind_down_time)
-            if late <= 0:
-                score += 20
-            elif late <= 30:
-                score += 14
-            elif late <= 60:
-                score += 8
-        return score
+        if not entry.sleep_time:
+            return 0
+        late = self._minutes_late(entry.sleep_time, self.settings.target_sleep_time)
+        if late <= 0:
+            return 100
+        if late <= 15:
+            return 90
+        if late <= 30:
+            return 75
+        if late <= 60:
+            return 55
+        if late <= 120:
+            return 25
+        return 0
 
     def _maybe_ask_sleep_reason(self, entry: EffectivenessEntry) -> str | None:
         if entry.sleep_time and not entry.sleep_deviation_reason:
             late = self._minutes_late(entry.sleep_time, self.settings.target_sleep_time)
             if late > 15:
                 return self._start_sleep_reason_prompt(entry, "sleep", f"лег позже цели на {late} мин")
-            if late < -30:
-                return self._start_sleep_reason_prompt(entry, "sleep", f"лег раньше цели на {abs(late)} мин")
-        if entry.wake_time and not entry.wake_deviation_reason:
-            late = self._wake_minutes_late(entry.wake_time, self.settings.target_wake_time)
-            if late > 30:
-                return self._start_sleep_reason_prompt(entry, "wake", f"проснулся позже цели на {late} мин")
-            if late < -30:
-                return self._start_sleep_reason_prompt(entry, "wake", f"проснулся раньше цели на {abs(late)} мин")
         return None
 
     def _start_sleep_reason_prompt(self, entry: EffectivenessEntry, reason_type: str, deviation: str) -> str:
@@ -641,14 +623,22 @@ class ProductivityService:
         reasons: list[str] = []
         for entry in reversed(entries):
             if entry.sleep_deviation_reason:
-                reasons.append(f"• {entry.day.strftime('%d.%m')}: сон — {entry.sleep_deviation_reason}")
-            if entry.wake_deviation_reason:
-                reasons.append(f"• {entry.day.strftime('%d.%m')}: подъем — {entry.wake_deviation_reason}")
+                reasons.append(f"• {entry.day.strftime('%d.%m')}: {entry.sleep_deviation_reason}")
             if len(reasons) >= 3:
                 break
         if not reasons:
             return ""
-        return "\n\nПоследние причины отклонений:\n" + "\n".join(reasons[:3])
+        return "\n\nПоследние нарушения режима сна:\n" + "\n".join(reasons[:3])
+
+    def _has_sleep_disruption(self, entry: EffectivenessEntry) -> bool:
+        if not entry.sleep_time:
+            return False
+        return self._minutes_late(entry.sleep_time, self.settings.target_sleep_time) > 15
+
+    def _sleep_disruption_label(self, entry: EffectivenessEntry) -> str:
+        if not self._has_sleep_disruption(entry):
+            return "нет"
+        return entry.sleep_deviation_reason or "причина не указана"
 
     @staticmethod
     def _decode_data_url(value: str) -> bytes | None:
@@ -692,6 +682,12 @@ class ProductivityService:
         if len(candidates) == 1:
             return True
         return candidates[0].score - candidates[1].score >= 12
+
+    @staticmethod
+    def _looks_like_pending_reply(action: PendingAction, normalized: str) -> bool:
+        if normalized in YES_VALUES or normalized in NO_VALUES:
+            return True
+        return action.kind == "select_candidate" and normalized.isdigit()
 
     @staticmethod
     def _create_summary(payload: dict[str, Any]) -> str:
